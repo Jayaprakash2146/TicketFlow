@@ -1,0 +1,295 @@
+// TicketFlow schema
+// Concurrency core: SeatLock carries a DB-level UNIQUE(eventId, seatId)
+// constraint. Exactly one active hold / booking / waitlist-offer can ever
+// occupy a seat for a show. TTLs are enforced by expiring lock rows.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ----------------------------------------------------------------Enums
+
+enum Role {
+  CUSTOMER
+  ORGANIZER
+  ADMIN
+}
+
+enum EventType {
+  MOVIE
+  CONCERT
+}
+
+enum EventStatus {
+  PUBLISHED
+  CANCELLED
+}
+
+enum HoldStatus {
+  ACTIVE // hold placed, TTL running
+  RELEASED // customer released / replaced
+  EXPIRED // TTL elapsed, seats freed
+  CONVERTED // turned into a confirmed booking
+}
+
+enum BookingStatus {
+  CONFIRMED
+  CANCELLED
+}
+
+enum LockType {
+  HOLD // seat held for checkout (has expiresAt)
+  BOOKING // seat permanently sold
+  OFFER // seat offered to a waitlisted customer (has expiresAt)
+}
+
+enum WaitlistStatus {
+  WAITING // in queue
+  OFFERED // seat offered, waiting for acceptance
+  BOOKED // accepted an offer
+  EXPIRED // let an offer expire
+  LEFT // left the queue
+}
+
+enum OfferStatus {
+  ACTIVE
+  ACCEPTED
+  EXPIRED
+}
+
+// ----------------------------------------------------------------Models
+
+model User {
+  id           String          @id @default(cuid())
+  name         String
+  email        String          @unique
+  passwordHash String
+  role         Role            @default(CUSTOMER)
+  createdAt    DateTime        @default(now())
+  holds        Hold[]
+  bookings     Booking[]
+  waitlist     WaitlistEntry[]
+  events       Event[]         @relation("OrganiserEvents")
+  createdVenues Venue[]        @relation("CreatedVenues")
+}
+
+model Venue {
+  id          String         @id @default(cuid())
+  name        String
+  address     String
+  city        String
+  seatRows    Int
+  seatCols    Int
+  createdById String?        // organizer who created this venue (null = admin/seed)
+  createdBy   User?          @relation("CreatedVenues", fields: [createdById], references: [id], onDelete: SetNull)
+  createdAt   DateTime       @default(now())
+  categories  SeatCategory[]
+  seats       Seat[]
+  events      Event[]
+}
+
+model SeatCategory {
+  id        String   @id @default(cuid())
+  venueId   String
+  name      String
+  color     String // hex color used on the seat map
+  createdAt DateTime @default(now())
+  venue     Venue    @relation(fields: [venueId], references: [id], onDelete: Cascade)
+  seats     Seat[]
+  prices    EventPrice[]
+  waitlist  WaitlistEntry[]
+
+  @@unique([venueId, name])
+}
+
+model Seat {
+  id         String       @id @default(cuid())
+  venueId    String
+  rowLabel   String // "A"
+  rowIndex   Int
+  colIndex   Int
+  number     String // "A12"
+  categoryId String
+  venue      Venue        @relation(fields: [venueId], references: [id], onDelete: Cascade)
+  category   SeatCategory @relation(fields: [categoryId], references: [id])
+  locks      SeatLock[]
+  holdSeats  HoldSeat[]
+  bookingSeats BookingSeat[]
+  offerSeats OfferSeat[]
+
+  @@unique([venueId, rowIndex, colIndex])
+  @@index([venueId, categoryId])
+}
+
+model Event {
+  id           String        @id @default(cuid())
+  title        String
+  type         EventType
+  description  String        @db.Text
+  posterUrl    String?
+  venueId      String
+  venue        Venue         @relation(fields: [venueId], references: [id])
+  organizerId  String
+  organizer    User          @relation("OrganiserEvents", fields: [organizerId], references: [id])
+  startsAt     DateTime
+  durationMin  Int           @default(120)
+  status       EventStatus   @default(PUBLISHED)
+  createdAt    DateTime      @default(now())
+  prices       EventPrice[]
+  locks        SeatLock[]
+  holds        Hold[]
+  bookings     Booking[]
+  waitlist     WaitlistEntry[]
+  offers       WaitlistOffer[]
+
+  @@index([startsAt])
+}
+
+model EventPrice {
+  id          String   @id @default(cuid())
+  eventId     String
+  categoryId String
+  priceCents  Int
+  event       Event    @relation(fields: [eventId], references: [id], onDelete: Cascade)
+  category    SeatCategory @relation(fields: [categoryId], references: [id])
+
+  @@unique([eventId, categoryId])
+}
+
+/// One row per seat that is currently unavailable for a given event.
+/// The UNIQUE(eventId, seatId) index is the single source of truth that
+/// makes double-hold / double-booking impossible at the database level.
+model SeatLock {
+  id        String    @id @default(cuid())
+  eventId   String
+  seatId    String
+  type      LockType
+  holdId    String?
+  bookingId String?
+  offerId   String?
+  expiresAt DateTime? // null => permanent (BOOKING)
+  createdAt DateTime  @default(now())
+  event     Event     @relation(fields: [eventId], references: [id], onDelete: Cascade)
+  seat      Seat      @relation(fields: [seatId], references: [id])
+  hold      Hold?     @relation(fields: [holdId], references: [id])
+  booking   Booking?  @relation(fields: [bookingId], references: [id])
+  offer     WaitlistOffer? @relation(fields: [offerId], references: [id])
+
+  @@unique([eventId, seatId])
+  @@index([expiresAt])
+}
+
+model Hold {
+  id        String      @id @default(cuid())
+  eventId   String
+  userId    String
+  status    HoldStatus  @default(ACTIVE)
+  expiresAt DateTime
+  createdAt DateTime    @default(now())
+  event     Event       @relation(fields: [eventId], references: [id], onDelete: Cascade)
+  user      User        @relation(fields: [userId], references: [id])
+  seats     HoldSeat[]
+  locks     SeatLock[]
+
+  @@index([eventId, userId, status])
+}
+
+model HoldSeat {
+  id     String @id @default(cuid())
+  holdId String
+  seatId String
+  hold   Hold   @relation(fields: [holdId], references: [id], onDelete: Cascade)
+  seat   Seat   @relation(fields: [seatId], references: [id])
+
+  @@unique([holdId, seatId])
+}
+
+model Booking {
+  id          String         @id @default(cuid())
+  reference   String         @unique // encoded in the QR ticket
+  eventId     String
+  userId      String
+  status      BookingStatus  @default(CONFIRMED)
+  totalCents  Int
+  bookedAt    DateTime       @default(now())
+  cancelledAt DateTime?
+  event       Event          @relation(fields: [eventId], references: [id])
+  user        User           @relation(fields: [userId], references: [id])
+  seats       BookingSeat[]
+  locks       SeatLock[]
+
+  @@index([userId])
+  @@index([eventId, status])
+}
+
+model BookingSeat {
+  id         String  @id @default(cuid())
+  bookingId  String
+  seatId     String
+  priceCents Int
+  booking    Booking @relation(fields: [bookingId], references: [id], onDelete: Cascade)
+  seat       Seat    @relation(fields: [seatId], references: [id])
+
+  @@unique([bookingId, seatId])
+}
+
+model WaitlistEntry {
+  id         String          @id @default(cuid())
+  eventId    String
+  categoryId String
+  userId     String
+  quantity   Int             @default(1) // seats wanted (1..6)
+  status     WaitlistStatus  @default(WAITING)
+  joinedAt   DateTime        @default(now())
+  event      Event           @relation(fields: [eventId], references: [id], onDelete: Cascade)
+  user       User            @relation(fields: [userId], references: [id])
+  category   SeatCategory    @relation(fields: [categoryId], references: [id])
+  offers     WaitlistOffer[]
+
+  @@index([eventId, categoryId, status, joinedAt])
+}
+
+model WaitlistOffer {
+  id         String       @id @default(cuid())
+  entryId    String
+  eventId    String
+  categoryId String
+  status     OfferStatus  @default(ACTIVE)
+  expiresAt  DateTime
+  createdAt  DateTime     @default(now())
+  acceptedBookingId String?
+  entry      WaitlistEntry @relation(fields: [entryId], references: [id], onDelete: Cascade)
+  event      Event        @relation(fields: [eventId], references: [id], onDelete: Cascade)
+  seats      OfferSeat[]
+  locks      SeatLock[]
+
+  @@index([eventId, status])
+}
+
+model OfferSeat {
+  id       String        @id @default(cuid())
+  offerId  String
+  seatId   String
+  offer    WaitlistOffer @relation(fields: [offerId], references: [id], onDelete: Cascade)
+  seat     Seat          @relation(fields: [seatId], references: [id])
+
+  @@unique([offerId, seatId])
+}
+
+/// Stores every email the system produces. When SMTP is not configured,
+//  this table doubles as a dev mailbox (viewable at /admin/emails).
+/// `error` holds the exact SMTP delivery failure, if any.
+model EmailLog {
+  id        String   @id @default(cuid())
+  to        String
+  subject   String
+  html      String   @db.Text
+  sent      Boolean  @default(false)
+  error     String?  @db.Text
+  createdAt DateTime @default(now())
+}
