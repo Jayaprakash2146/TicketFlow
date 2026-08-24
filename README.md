@@ -441,7 +441,7 @@ After `npm run db:seed`: the single admin (from your `.env`), one sample organiz
 5. Optional: Render Cron Job hitting `/api/cron/expire?secret=<CRON_SECRET>` every 10 minutes.
 6. Verify: `/api/health` -> `db: "up"`; landing shows 2 events; admin login; Admin -> System mailbox -> Send test email.
 
-### Render Deployment Live Link
+### Vercel Deployment Live Link
 
 
-Live Link(Render) :https://ticketflow-2-fazx.onrender.com
+Live Link(Vercel) :https://ticket-flow-7t1o.vercel.app
