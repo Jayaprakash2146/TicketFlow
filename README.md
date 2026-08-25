@@ -89,8 +89,9 @@ DATABASE_URL="postgresql://postgres:postgres@localhost:5432/ticketflow?schema=pu
 AUTH_SECRET="change-me-to-a-long-random-string"
 # The single admin account created by `npm run db:seed`.
 # This platform intentionally has exactly one admin - there is no admin signup.
-ADMIN_EMAIL="admin@example.com"
-ADMIN_PASSWORD="change-me-strong-password"
+ADMIN_EMAIL="alurjayaprakash6421@gmail.com"
+ADMIN_PASSWORD="Ajp@214006"
+You can use the admin username and password for all the logs and details of customers and organizers. 
 
 # ------------------------------------------------------------------
 # Seat hold TTL (minutes) - held seats auto-release after this
